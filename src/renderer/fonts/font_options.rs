@@ -37,6 +37,14 @@ pub struct FontDescription {
     pub style: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum EmojiFont {
+    #[default]
+    Auto,
+    Disabled,
+    Fonts(Vec<FontDescription>),
+}
+
 /// Description of the italic and bold fonts.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct SecondaryFontDescription {
@@ -100,6 +108,7 @@ impl From<&Arc<editor::Style>> for CoarseStyle {
 #[derive(Clone, Debug)]
 pub struct FontOptions {
     pub normal: Vec<FontDescription>,
+    pub emoji: EmojiFont,
     pub italic: Option<Vec<SecondaryFontDescription>>,
     pub bold: Option<Vec<SecondaryFontDescription>>,
     pub bold_italic: Option<Vec<SecondaryFontDescription>>,
@@ -246,6 +255,7 @@ impl Default for FontOptions {
     fn default() -> Self {
         FontOptions {
             normal: Vec::new(),
+            emoji: EmojiFont::Auto,
             italic: None,
             bold: None,
             bold_italic: None,
@@ -262,6 +272,7 @@ impl Default for FontOptions {
 impl PartialEq for FontOptions {
     fn eq(&self, other: &Self) -> bool {
         self.normal == other.normal
+            && self.emoji == other.emoji
             && self.bold == other.bold
             && self.italic == other.italic
             && self.bold_italic == other.bold_italic

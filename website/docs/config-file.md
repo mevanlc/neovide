@@ -67,6 +67,7 @@ wsl = false
 
 [font]
 normal = [] # Will use the bundled Fira Code Nerd Font by default
+emoji = true # Automatically select the system emoji font
 size = 14.0
 
 [box-drawing]
@@ -106,6 +107,7 @@ applies a new Neovim grid size, and `maximized` updates the live maximized state
 `[font]` table in configuration file contains:
 
 - `normal`: required, `FontDescription`
+- `emoji`: optional, boolean or `FontDescription`; defaults to `true`
 - `bold`: optional, `SecondaryFontDescription`
 - `italic`: optional, `SecondaryFontDescription`
 - `bold_italic`: optional, `SecondaryFontDescription`
@@ -145,6 +147,39 @@ Settings `size`, `width`, `hinting` and `edging` can be found in
     metrics, or `-1.0` by default.
   - Positive underline offset values will move the underline below the baseline, while negative
     values move it above.
+
+The `emoji` setting controls font priority for emoji presentation independently of the normal
+font. It never changes the grid's cell width or line height.
+
+| Value | Behavior |
+| --- | --- |
+| Omitted or `true` | Automatically prefer the system emoji font. |
+| `false` | Use the ordinary font order, preserving the previous behavior. |
+| String | Prefer the named font family for emoji. |
+| Table | Prefer `family`, with an optional `style`. |
+| Array of strings or tables | Try the listed emoji fonts in order. |
+
+Explicit entries require a family and do not inherit bold or italic from surrounding text.
+If no selected emoji font covers the entire grapheme, ordinary font fallback continues. An empty
+array also uses ordinary fallback. Setting `emoji = false` disables special emoji priority; it
+does not prevent ordinary fallback from using a color emoji font.
+
+Emoji font priority applies to Unicode's default emoji presentation and to sequences requesting
+emoji presentation with U+FE0F, including keycaps, flags, skin tones, and joined emoji. Explicit
+text presentation with U+FE0E uses the normal font order. Plain digits, `#`, `*`, and text-default
+symbols without an emoji selector keep their normal font priority.
+
+For example, keep a text font responsible for grid dimensions while choosing emoji fonts:
+
+```toml
+[font]
+normal = ["MesloLGSDZ Nerd Font Mono"]
+emoji = ["Apple Color Emoji", { family = "Noto Color Emoji", style = "Normal" }]
+size = 16
+```
+
+The `emoji` policy is hot reloaded with the other font settings and is preserved when Neovim
+changes `guifont`.
 
 Example:
 

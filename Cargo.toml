@@ -91,6 +91,7 @@ tracy-client-sys = { version = "0.28.0", default-features = false, features = [
   "fibers",
   "manual-lifetime",
 ], optional = true }
+unicode-properties = { version = "0.1.5", default-features = false, features = ["emoji"] }
 winit = { version = "=0.30.13", features = ["serde"] }
 
 [dev-dependencies]

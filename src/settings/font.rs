@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 
+use crate::renderer::fonts::font_options::EmojiFont;
 use crate::renderer::fonts::font_options::FontDescription;
 use crate::renderer::fonts::font_options::FontEdging;
 use crate::renderer::fonts::font_options::FontFeature;
@@ -26,6 +27,23 @@ pub enum FontDescriptionSettings {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(untagged)]
+pub enum EmojiFontSettings {
+    Enabled(bool),
+    Fonts(FontDescriptionSettings),
+}
+
+impl From<EmojiFontSettings> for EmojiFont {
+    fn from(value: EmojiFontSettings) -> Self {
+        match value {
+            EmojiFontSettings::Enabled(true) => Self::Auto,
+            EmojiFontSettings::Enabled(false) => Self::Disabled,
+            EmojiFontSettings::Fonts(fonts) => Self::Fonts(fonts.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
 pub enum SimpleSecondaryFontDescription {
     String(String),
     Details(SecondaryFontDescription),
@@ -42,6 +60,7 @@ pub enum SecondaryFontDescriptionSettings {
 pub struct FontSettings {
     /// Font family to use for the normal font.
     pub normal: FontDescriptionSettings,
+    pub emoji: Option<EmojiFontSettings>,
     pub bold: Option<SecondaryFontDescriptionSettings>,
     pub italic: Option<SecondaryFontDescriptionSettings>,
     pub bold_italic: Option<SecondaryFontDescriptionSettings>,
@@ -98,6 +117,7 @@ impl From<FontSettings> for FontOptions {
     fn from(value: FontSettings) -> Self {
         FontOptions {
             normal: value.normal.into(),
+            emoji: value.emoji.map(Into::into).unwrap_or_default(),
             italic: value.italic.map(|value| value.into()),
             bold: value.bold.map(|value| value.into()),
             bold_italic: value.bold_italic.map(|value| value.into()),
@@ -138,6 +158,69 @@ impl From<FontSettings> for FontOptions {
 mod tests {
     use super::*;
     use crate::renderer::fonts::font_options::CoarseStyle;
+
+    fn options_with_emoji(setting: &str) -> FontOptions {
+        let settings = format!("normal = []\nsize = 16\n{setting}");
+        let settings: FontSettings = toml::from_str(&settings).unwrap();
+        settings.into()
+    }
+
+    #[test]
+    fn emoji_absent_or_true_uses_automatic_selection() {
+        for setting in ["", "emoji = true"] {
+            assert_eq!(options_with_emoji(setting).emoji, EmojiFont::Auto);
+        }
+    }
+
+    #[test]
+    fn emoji_false_restores_ordinary_font_order() {
+        assert_eq!(options_with_emoji("emoji = false").emoji, EmojiFont::Disabled);
+    }
+
+    #[test]
+    fn emoji_accepts_a_family_or_family_and_style() {
+        for (setting, style) in [
+            (r#"emoji = "Apple Color Emoji""#, None),
+            (r#"emoji = { family = "Apple Color Emoji" }"#, None),
+            (r#"emoji = { family = "Apple Color Emoji", style = "Normal" }"#, Some("Normal")),
+        ] {
+            assert_eq!(
+                options_with_emoji(setting).emoji,
+                EmojiFont::Fonts(vec![FontDescription {
+                    family: "Apple Color Emoji".into(),
+                    style: style.map(Into::into),
+                }]),
+            );
+        }
+    }
+
+    #[test]
+    fn emoji_accepts_ordered_arrays_of_families_and_tables() {
+        let options = options_with_emoji(
+            r#"emoji = ["Apple Color Emoji", { family = "Noto Color Emoji", style = "Normal" }]"#,
+        );
+        assert_eq!(
+            options.emoji,
+            EmojiFont::Fonts(vec![
+                FontDescription { family: "Apple Color Emoji".into(), style: None },
+                FontDescription { family: "Noto Color Emoji".into(), style: Some("Normal".into()) },
+            ]),
+        );
+        assert_eq!(options_with_emoji("emoji = []").emoji, EmojiFont::Fonts(Vec::new()));
+    }
+
+    #[test]
+    fn emoji_rejects_style_only_tables_and_non_font_array_elements() {
+        for setting in [
+            "emoji = { style = 'Normal' }",
+            "emoji = [true]",
+            "emoji = [{ style = 'Normal' }]",
+            "emoji = 12",
+        ] {
+            let settings = format!("normal = []\nsize = 16\n{setting}");
+            assert!(toml::from_str::<FontSettings>(&settings).is_err(), "{setting}");
+        }
+    }
 
     #[test]
     fn test_normal_font_single() {

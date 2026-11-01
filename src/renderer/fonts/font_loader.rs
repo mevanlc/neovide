@@ -154,6 +154,30 @@ impl FontLoader {
         Some(font_pair)
     }
 
+    pub fn load_system_emoji_font(
+        &mut self,
+        hinting: FontHinting,
+        edging: FontEdging,
+    ) -> Option<Rc<FontPair>> {
+        // Resolve using an unambiguously emoji character and the Unicode emoji
+        // script hint, rather than a text-default symbol such as U+26A0.
+        let typeface = self.font_mgr.match_family_style_character(
+            "emoji",
+            CoarseStyle::default().into(),
+            &["und-Zsye"],
+            '😀' as i32,
+        )?;
+        let key = FontKey {
+            font_desc: Some(FontDescription { family: typeface.family_name(), style: None }),
+            hinting,
+            edging,
+        };
+        let font =
+            Rc::new(FontPair::new(key.clone(), Font::from_typeface(typeface, self.font_size))?);
+        self.cache.put(key, font.clone());
+        Some(font)
+    }
+
     pub fn get_or_load_last_resort(&mut self) -> Option<Rc<FontPair>> {
         if self.last_resort.is_some() {
             self.last_resort.clone()

@@ -37,7 +37,10 @@ and background from built in window transparency.
 
 ## Emoji Support
 
-Font fallback supports rendering of emoji not contained in the configured font.
+Neovide prefers the system emoji font for emoji presentation, even when the normal font contains
+a monochrome version of the symbol. Text presentation keeps the normal font order, and the normal
+font determines grid dimensions. Use [`font.emoji`](config-file.md#font) to choose an emoji font
+or set it to `false` to restore ordinary font priority.
 
 On macOS, open the native emoji picker with <kbd>Fn</kbd> + <kbd>E</kbd>,
 <kbd>Control</kbd> + <kbd>Command</kbd> + <kbd>Space</kbd>, or **Edit > Emoji & Symbols**.

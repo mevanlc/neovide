@@ -1,3 +1,5 @@
+use std::cell::OnceCell;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -25,6 +27,8 @@ use swash::text::cluster::Token;
 use crate::editor::Word;
 use crate::error_msg;
 use crate::profiling::tracy_zone;
+use crate::renderer::fonts::emoji::supports_grapheme;
+use crate::renderer::fonts::emoji::uses_emoji_presentation;
 use crate::renderer::fonts::font_loader::*;
 use crate::renderer::fonts::font_options::*;
 use crate::units::PixelSize;
@@ -44,6 +48,9 @@ const FONT_CACHE_SIZE: usize = 8 * 1024 * 1024;
 pub struct CachingShaper {
     options: FontOptions,
     font_loader: FontLoader,
+    // Keep emoji-only candidates out of ordinary fallback's loaded-font search.
+    emoji_font_loader: FontLoader,
+    system_emoji_font: OnceCell<Option<Rc<FontPair>>>,
     blob_cache: LruCache<ShapeKey, Vec<TextBlob>>,
     shape_context: ShapeContext,
     scale_factor: f32,
@@ -80,6 +87,8 @@ impl CachingShaper {
         let mut shaper = CachingShaper {
             options,
             font_loader: FontLoader::new(font_size),
+            emoji_font_loader: FontLoader::new(font_size),
+            system_emoji_font: OnceCell::new(),
             blob_cache: LruCache::new(NonZeroUsize::new(10000).unwrap()),
             shape_context: ShapeContext::new(),
             scale_factor,
@@ -118,7 +127,7 @@ impl CachingShaper {
     pub fn update_font(&mut self, guifont_setting: &str) {
         debug!("Updating font: {guifont_setting}");
 
-        let options = match FontOptions::parse(guifont_setting) {
+        let mut options = match FontOptions::parse(guifont_setting) {
             Ok(opt) => opt,
             Err(msg) => {
                 error_msg!("Failed to parse guifont: {}", msg);
@@ -126,6 +135,8 @@ impl CachingShaper {
             }
         };
 
+        // guifont controls text fonts; it has no syntax for the configured emoji policy.
+        options.emoji.clone_from(&self.options.emoji);
         self.update_font_options(options);
     }
 
@@ -143,14 +154,10 @@ impl CachingShaper {
             .unique()
             .collect::<Vec<_>>();
 
-        if keys.is_empty() {
-            return;
-        }
-
         let failed_fonts =
             keys.iter().filter(|key| self.font_loader.get_or_load(key).is_none()).collect_vec();
 
-        if failed_fonts.len() == keys.len() {
+        if !keys.is_empty() && failed_fonts.len() == keys.len() {
             error_msg!(
                 "Font can't be updated to: {:#?}\n\
                 No candidate fonts could be loaded: {}",
@@ -201,6 +208,8 @@ impl CachingShaper {
         let font_size = self.current_size();
 
         self.font_loader = FontLoader::new(font_size);
+        self.emoji_font_loader = FontLoader::new(font_size);
+        self.system_emoji_font.take();
         let (_, font_width) = self.info();
         info!("Reset Font Loader: font_size: {font_size:.2}px, font_width: {font_width:.2}px");
 
@@ -268,12 +277,54 @@ impl CachingShaper {
         metrics.ascent + (metrics.leading + self.linespace) / 2.0
     }
 
+    fn emoji_font_for_grapheme(&mut self, text: &str) -> Option<Rc<FontPair>> {
+        if !uses_emoji_presentation(text) {
+            return None;
+        }
+        match &self.options.emoji {
+            EmojiFont::Disabled => None,
+            EmojiFont::Auto => self
+                .system_emoji_font
+                .get_or_init(|| {
+                    self.emoji_font_loader.load_system_emoji_font(
+                        self.options.hinting.clone(),
+                        self.options.edging.clone(),
+                    )
+                })
+                .as_ref()
+                .filter(|font| supports_grapheme(font.swash_font.as_ref(), text))
+                .cloned(),
+            EmojiFont::Fonts(fonts) => fonts.iter().find_map(|font| {
+                let key = FontKey {
+                    font_desc: Some(font.clone()),
+                    hinting: self.options.hinting.clone(),
+                    edging: self.options.edging.clone(),
+                };
+                let font = self.emoji_font_loader.get_or_load(&key)?;
+                supports_grapheme(font.swash_font.as_ref(), text).then_some(font)
+            }),
+        }
+    }
+
     fn build_clusters(
         &mut self,
         word: Word<'_>,
         style: CoarseStyle,
     ) -> Vec<(Vec<CharCluster>, Rc<FontPair>)> {
         let mut cluster = CharCluster::new();
+
+        // Neovim's graphemes may span multiple shaping clusters (for example,
+        // regional indicators). Select one font covering the entire grapheme.
+        let emoji_fonts: HashMap<_, _> =
+            if self.options.emoji == EmojiFont::Disabled || word.text.is_ascii() {
+                HashMap::new()
+            } else {
+                word.grapheme_clusters()
+                    .filter_map(|(cell, text)| {
+                        self.emoji_font_for_grapheme(text).map(|font| (cell as u32, font))
+                    })
+                    .collect()
+            };
 
         // Enumerate the characters storing the glyph index in the user data so that we can position
         // glyphs according to Neovim's grid rules
@@ -292,6 +343,11 @@ impl CachingShaper {
 
         let mut results = Vec::new();
         'cluster: while parser.next(&mut cluster) {
+            if let Some(font) = emoji_fonts.get(&cluster.user_data()) {
+                results.push((cluster.to_owned(), font.clone()));
+                continue;
+            }
+
             // TODO: Don't redo this work for every cluster. Save it some how
             // Create font fallback list
             let mut font_fallback_keys = Vec::new();
@@ -502,6 +558,168 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+
+    #[test]
+    fn automatic_emoji_font_is_loaded_only_when_needed() {
+        let mut shaper = CachingShaper::new(1.0);
+        assert!(shaper.system_emoji_font.get().is_none());
+        shaper.shape_cached(Word::new("text", &[1, 1, 1, 1]), CoarseStyle::default());
+        assert!(shaper.system_emoji_font.get().is_none());
+        shaper.emoji_font_for_grapheme("⚠️");
+        assert!(shaper.system_emoji_font.get().is_some());
+    }
+
+    #[test]
+    fn emoji_policy_can_be_configured_with_the_bundled_normal_font() {
+        let mut shaper = CachingShaper::new(1.0);
+        let dimensions = shaper.font_base_dimensions();
+        shaper.update_font_options(FontOptions {
+            emoji: EmojiFont::Disabled,
+            ..FontOptions::default()
+        });
+        assert_eq!(shaper.options.emoji, EmojiFont::Disabled);
+        assert_eq!(shaper.font_base_dimensions(), dimensions);
+    }
+
+    #[test]
+    fn changing_guifont_preserves_the_emoji_policy() {
+        let mut shaper = CachingShaper::new(1.0);
+        for emoji in [
+            EmojiFont::Disabled,
+            EmojiFont::Fonts(vec![FontDescription { family: "Custom Emoji".into(), style: None }]),
+        ] {
+            shaper.update_font_options(FontOptions {
+                emoji: emoji.clone(),
+                size: points_to_pixels(16.0),
+                ..FontOptions::default()
+            });
+            shaper.update_font("");
+            assert_eq!(shaper.options.emoji, emoji);
+            assert_eq!(shaper.current_size(), points_to_pixels(DEFAULT_FONT_SIZE));
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    mod macos_emoji {
+        use skia_safe::Color;
+        use skia_safe::Paint;
+        use skia_safe::surfaces;
+
+        use super::*;
+
+        fn options(emoji: EmojiFont) -> FontOptions {
+            let mut options = FontOptions::parse("Menlo:h16").unwrap();
+            options.emoji = emoji;
+            options
+        }
+
+        fn family(name: &str) -> FontDescription {
+            FontDescription { family: name.into(), style: None }
+        }
+
+        fn fonts_for_text(shaper: &mut CachingShaper, text: &str) -> Vec<FontDescription> {
+            shaper
+                .build_clusters(Word::new(text, &[text.len() as u8, 0]), CoarseStyle::default())
+                .into_iter()
+                .map(|(_, font)| font.key.font_desc.clone().unwrap())
+                .collect()
+        }
+
+        #[test]
+        fn automatic_emoji_priority_respects_text_presentation() {
+            let mut shaper = CachingShaper::new(1.0);
+            shaper.update_font_options(options(EmojiFont::Auto));
+            for text in ["⚠️", "✅", "👩🏽‍💻", "🇺🇸", "1️⃣", "☝🏽"] {
+                assert_eq!(
+                    fonts_for_text(&mut shaper, text),
+                    [family("Apple Color Emoji")],
+                    "{text}"
+                );
+            }
+            for text in ["⚠", "⚠︎", "1", "#", "*", "a"] {
+                assert_eq!(fonts_for_text(&mut shaper, text), [family("Menlo")], "{text}");
+            }
+        }
+
+        #[test]
+        fn custom_emoji_fonts_use_order_and_require_whole_grapheme_coverage() {
+            let mut shaper = CachingShaper::new(1.0);
+            shaper.update_font_options(options(EmojiFont::Fonts(vec![
+                family("Missing Emoji Font"),
+                family("Menlo"),
+                family("Apple Color Emoji"),
+            ])));
+            assert_eq!(fonts_for_text(&mut shaper, "⚠️"), [family("Menlo")]);
+            assert_eq!(fonts_for_text(&mut shaper, "👩🏽‍💻"), [family("Apple Color Emoji")]);
+            assert_eq!(fonts_for_text(&mut shaper, "🇺🇸"), [family("Apple Color Emoji")]);
+
+            // Explicit emoji fonts keep their own style, even in bold/italic text.
+            for style in CoarseStyle::permutations() {
+                let groups = shaper.build_clusters(Word::new("⚠️", &[6, 0]), style);
+                assert_eq!(groups[0].1.key.font_desc, Some(family("Menlo")));
+            }
+            assert!(shaper.font_loader.loaded_fonts().iter().all(|font| {
+                font.key.font_desc.as_ref().unwrap().family != "Apple Color Emoji"
+            }));
+
+            shaper.update_font_options(options(EmojiFont::Fonts(vec![
+                family("Apple Color Emoji"),
+                family("Menlo"),
+            ])));
+            assert_eq!(fonts_for_text(&mut shaper, "⚠️"), [family("Apple Color Emoji")]);
+        }
+
+        #[test]
+        fn missing_or_incomplete_emoji_fonts_leave_ordinary_fallback_available() {
+            let mut shaper = CachingShaper::new(1.0);
+            for emoji in [
+                EmojiFont::Disabled,
+                EmojiFont::Fonts(Vec::new()),
+                EmojiFont::Fonts(vec![family("Missing Emoji Font")]),
+                EmojiFont::Fonts(vec![family("Apple Symbols")]),
+            ] {
+                shaper.update_font_options(options(emoji));
+                assert_eq!(fonts_for_text(&mut shaper, "✅"), [family("Apple Color Emoji")]);
+            }
+            shaper
+                .update_font_options(options(EmojiFont::Fonts(vec![family("Missing Emoji Font")])));
+            assert_eq!(fonts_for_text(&mut shaper, "⚠️"), [family("Menlo")]);
+        }
+
+        fn warning_has_color(shaper: &mut CachingShaper) -> bool {
+            let mut surface = surfaces::raster_n32_premul((96, 96)).unwrap();
+            let canvas = surface.canvas();
+            canvas.clear(Color::TRANSPARENT);
+            let mut paint = Paint::default();
+            paint.set_color(Color::WHITE);
+            for blob in shaper.shape_cached(Word::new("⚠️", &[6, 0]), CoarseStyle::default()) {
+                canvas.draw_text_blob(blob, (16.0, 64.0), &paint);
+            }
+            let pixels = surface.peek_pixels().unwrap();
+            (0..pixels.height()).any(|y| {
+                (0..pixels.width()).any(|x| {
+                    let color = pixels.get_color((x, y));
+                    color.a() > 0 && (color.r() != color.g() || color.g() != color.b())
+                })
+            })
+        }
+
+        #[test]
+        fn reloading_emoji_policy_updates_color_without_changing_grid_metrics() {
+            let mut shaper = CachingShaper::new(1.0);
+            shaper.update_font_options(options(EmojiFont::Disabled));
+            let dimensions = shaper.font_base_dimensions();
+            assert!(!warning_has_color(&mut shaper));
+
+            shaper.update_font_options(options(EmojiFont::Auto));
+            assert!(warning_has_color(&mut shaper));
+            assert_eq!(shaper.font_base_dimensions(), dimensions);
+
+            shaper.update_font_options(options(EmojiFont::Disabled));
+            assert!(!warning_has_color(&mut shaper));
+            assert_eq!(shaper.font_base_dimensions(), dimensions);
+        }
+    }
 
     struct PlatformDefault {
         guifont: String,
