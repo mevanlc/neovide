@@ -68,7 +68,7 @@ impl KeyboardManager {
                 log::trace!("Ime commit {text}");
                 send_ui(
                     SerialCommand::KeyboardImeCommit {
-                        formatted: self.format_key_text(text, false),
+                        formatted: self.format_ime_commit(text),
                         raw: text.to_owned(),
                     },
                     neovim_handler,
@@ -201,6 +201,19 @@ impl KeyboardManager {
             .map(|text| self.format_key_text(text.as_str(), false))
     }
 
+    fn format_ime_commit(&self, text: &str) -> String {
+        // AppKit has already interpreted committed text. Shortcut modifiers can still
+        // be held when Character Viewer calls insertText:, but are not part of its text.
+        #[cfg(target_os = "macos")]
+        {
+            text.replace('<', "<lt>")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.format_key_text(text, false)
+        }
+    }
+
     fn format_key_text(&self, text: &str, is_special: bool) -> String {
         // Neovim always converts shifted ascii alpha characters to uppercase, so do it here already
         // This fixes some bugs where winit does not report the uppercase text as it should
@@ -249,6 +262,50 @@ impl KeyboardManager {
         (have_meta).then(|| ret += "M-");
         state.super_key().then(|| ret += "D-");
         ret
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use winit::keyboard::ModifiersState;
+
+    use super::*;
+
+    #[test]
+    fn ime_commits_preserve_unicode_and_case_with_held_modifiers() {
+        let mut manager = KeyboardManager::new(Arc::new(Settings::new()));
+        for modifiers in [
+            ModifiersState::empty(),
+            ModifiersState::CONTROL | ModifiersState::SUPER,
+            ModifiersState::SHIFT,
+            ModifiersState::ALT,
+            ModifiersState::all(),
+        ] {
+            manager.modifiers = modifiers.into();
+            manager.meta_is_pressed = modifiers.alt_key();
+            for text in ["😀", "👩🏽‍💻", "🇺🇸", "1️⃣", "e\u{301}", "a", "A"] {
+                assert_eq!(manager.format_ime_commit(text), text);
+            }
+        }
+    }
+
+    #[test]
+    fn ime_commits_escape_every_literal_less_than() {
+        let manager = KeyboardManager::new(Arc::new(Settings::new()));
+        for (text, expected) in
+            [("<", "<lt>"), ("<C-x>😀<", "<lt>C-x>😀<lt>"), ("<lt>", "<lt>lt>"), ("", "")]
+        {
+            assert_eq!(manager.format_ime_commit(text), expected);
+        }
+    }
+
+    #[test]
+    fn keyboard_shortcuts_keep_their_modifiers() {
+        let mut manager = KeyboardManager::new(Arc::new(Settings::new()));
+        manager.modifiers = (ModifiersState::CONTROL | ModifiersState::SUPER).into();
+        assert_eq!(manager.format_key_text("Space", true), "<C-D-Space>");
+        manager.modifiers = ModifiersState::SHIFT.into();
+        assert_eq!(manager.format_key_text("a", false), "A");
     }
 }
 

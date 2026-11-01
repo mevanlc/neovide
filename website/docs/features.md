@@ -39,6 +39,12 @@ and background from built in window transparency.
 
 Font fallback supports rendering of emoji not contained in the configured font.
 
+On macOS, open the native emoji picker with <kbd>Fn</kbd> + <kbd>E</kbd>,
+<kbd>Control</kbd> + <kbd>Command</kbd> + <kbd>Space</kbd>, or **Edit > Emoji & Symbols**.
+The Globe key also opens it when configured in macOS Keyboard settings. Select an emoji
+to send it to the current Neovim input without changing modes. Insertion requires
+[IME input](configuration.md#ime) to be enabled, which is the default.
+
 <img src="./assets/Emoji.png" alt="Emojis" width=550>
 
 ## WSL Support

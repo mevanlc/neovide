@@ -241,3 +241,5 @@ strip = false
 
 [patch.crates-io]
 nvim-rs = { git = "https://github.com/neovide/nvim-rs", branch = "handle-rpc-eof" }
+# macOS Character Viewer backport of winit #4639; see devdocs/MACOS-EMOJI-PICKER.md.
+winit = { git = "https://github.com/mevanlc/winit", rev = "f2281c2dc23dfb88c4fce6e679051ce25fb28d75" }

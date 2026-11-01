@@ -2517,6 +2517,9 @@ impl WinitWindowWrapper {
                 Some(route) => route,
                 None => return,
             };
+            // Character Viewer can open before the first composition session. Keep
+            // AppKit's caret rectangle current without enabling IME input.
+            #[cfg(not(target_os = "macos"))]
             if !route.state.ime_enabled {
                 return;
             }

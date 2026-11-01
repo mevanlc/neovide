@@ -409,6 +409,15 @@ impl Menu {
         }
         main_menu.addItem(&app_menu_item);
 
+        // AppKit populates a standard Edit menu with Emoji & Symbols, including
+        // the Fn+E and Control+Command+Space aliases for orderFrontCharacterPalette:.
+        let edit_menu = NSMenu::new(mtm);
+        edit_menu.setTitle(ns_string!("Edit"));
+        let edit_menu_item = NSMenuItem::new(mtm);
+        edit_menu_item.setTitle(ns_string!("Edit"));
+        edit_menu_item.setSubmenu(Some(&edit_menu));
+        main_menu.addItem(&edit_menu_item);
+
         let win_menu = self.add_window_menu(mtm, settings);
         let win_menu_item = NSMenuItem::new(mtm);
         win_menu_item.setSubmenu(Some(&win_menu));

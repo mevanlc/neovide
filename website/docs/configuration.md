@@ -908,6 +908,10 @@ vim.g.neovide_input_ime = true
 
 **Available since 0.11.0.**
 
+On macOS, this setting also controls text selected from the native emoji picker.
+Keep it enabled in modes where you want to insert emoji. Opening the picker does not
+override this setting or switch Neovim into Insert mode.
+
 This lets you disable the IME input. For example, to only enables IME in input mode and when
 searching, so that you can navigate normally, when typing some East Asian languages, you can add
 a few auto commands:
